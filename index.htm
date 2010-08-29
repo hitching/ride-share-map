@@ -137,7 +137,10 @@ function showResult(routes) {
 				driver.directionsDisplay.setOptions({
 					directions: result,
 					map: map,
-					polylineOptions: { strokeColor: '#' + driver.color },
+					polylineOptions: {
+						clickable: false,
+						strokeColor: '#' + driver.color
+					},
 					suppressMarkers: true,
 					preserveViewport: true
 				});
@@ -159,7 +162,7 @@ function showResult(routes) {
 		});
 	}
 
-	$('#warnings').html(shortestDetour.directionsResult.routes[0].warnings.join('<br/'));
+	$('#warnings').html(shortestDetour.directionsResult.routes[0].warnings.join('<br/>'));
 	$('#copyrights').html(shortestDetour.directionsResult.routes[0].copyrights);
 }
 
@@ -209,15 +212,19 @@ function addDriver(driver) {
 
 // convert a number in meters to miles
 Number.prototype.mToMiles = function() {
-	return (this/1609).toPrecision(2) + ' miles';
+	var miles = this/1609.344;
+	return (miles >= 100 ? Math.round(miles) : miles.toPrecision(2)) + ' miles';
 };
 </script>
 <style type="text/css">
-body { font-family: Verdana, sans-serif; }
+body { font-family: Verdana, sans-serif; font-size: 10pt; }
 #result, #warnings, #copyrights { margin-bottom: 10px; }
 </style>
 </head>
 <body>
+Given four latitude / longitude pairs, 
+where Driver One is traveling from point A to point B and Driver Two is traveling from point C to point D, 
+calculate the shorter of the detour distances the drivers would need to take to pick-up and drop-off the other driver...
 <h2>Drag the markers to recalculate the shortest detour</h2>
 <div id="result">Loading...</div>
 <div id="map_canvas"></div>
