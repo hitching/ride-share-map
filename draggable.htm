@@ -1,0 +1,377 @@
+<html>
+<head>
+<meta http-equiv="content-type" content="text/html; charset=UTF-8"/>
+<title>Draggable Ride Share Map</title>
+<script type="text/javascript" src="http://maps.google.com/maps/api/js?sensor=false"></script>
+<script type="text/javascript" src="http://ajax.googleapis.com/ajax/libs/jquery/1.4.2/jquery.min.js"></script>
+<script type="text/javascript">
+/*
+Inspired by http://www.zimride.com
+
+Bob Hitching, http://hitching.net - mobile geo social
+*/
+
+// Given four lattitude / longitude pairs ...
+var markers = {
+	A: new google.maps.LatLng(37.46498, -122.43585),
+	B: new google.maps.LatLng(37.8738, -122.2466),
+	C: new google.maps.LatLng(37.5240, -122.3429),
+	D: new google.maps.LatLng(37.78327, -122.40898)
+};
+	
+var map;
+var directionsService = new google.maps.DirectionsService();
+var scenarios = [];
+var solution;
+
+$().ready(function() {
+	// setup the map
+	$('#map_canvas').css({
+		height: $(window).height(),
+		width: $(window).width() - 300
+	});
+	var myOptions = {
+		zoom: 11,
+		mapTypeId: google.maps.MapTypeId.ROADMAP,
+		center: new google.maps.LatLng(37.663, -122.255)
+	}
+	map = new google.maps.Map(document.getElementById("map_canvas"), myOptions);
+	
+	// setup scenarios, each includes an array of shared or solo Trip(s)
+	// setup of each Trip includes calculating initial routes, distances
+	new Scenario({
+		key: 0,
+		label: 'Mr. Green and Ms. Red go their separate ways.', 
+		trips: [ new Trip({ from: 'A', to: 'B', via: [], color: '#FF0000' }), new Trip({ from: 'C', to: 'D', via: [], color: '#00FF00' }) ] 
+	});	
+	new Scenario({
+		key: 1,
+		label: 'Ms. Red picks up Mr. Green', 
+		trips: [ new Trip({ from: 'A', to: 'B', via: ['C', 'D'], color: '#FF0000' }) ]
+	});
+	new Scenario({
+		key: 2,
+		label: 'Mr. Green picks up Ms. Red',
+		trips: [ new Trip({ from: 'C', to: 'D', via: ['A', 'B'], color: '#00FF00' }) ]
+	});
+});
+
+// Trip class
+function Trip(options) {
+	this.from = options.from;
+	this.to = options.to;
+	this.via = options.via;
+	this.key = [options.from].concat(options.via).concat([options.to]).join('');
+	this.color = options.color;
+	this.distance = 0;
+	this.directionsDisplay = new google.maps.DirectionsRenderer();
+
+	this.directionsRequest = {
+		origin: markers[options.from], 
+		destination: markers[options.to],
+		waypoints: $.map(options.via, function (waypoint) {
+			return {
+				location: markers[waypoint],
+				stopover: true
+			}
+		}),
+		travelMode: google.maps.DirectionsTravelMode.DRIVING
+	};
+
+	var self = this;
+	
+	// calc total length
+	this.calcDistance = function() {
+		this.distance = 0;
+		if (this.directionsStatus == google.maps.DirectionsStatus.OK) {
+			$.each(this.directionsResult.routes[0].legs, function(key, leg) {
+				self.distance += leg.distance.value;
+			});
+		}
+		
+		// re-calc the best solution, setting colors/thickness of routes accordingly
+		solve();
+	};
+	
+	this.route = function() {
+		self.directionsStatus = null;
+		directionsService.route(self.directionsRequest, function(result, status) {
+			self.directionsResult = result;
+			self.directionsStatus = status;
+			self.calcDistance();
+		});
+	};
+	this.route();
+
+	return this;
+}
+
+// Scenario class
+function Scenario(options) {
+	this.key = options.key;
+	this.label = options.label;
+	this.trips = options.trips;
+	
+	scenarios.push(this);
+	
+	$('<div>').attr({
+		id : 'scenario' + this.key
+	}).addClass('scenario').appendTo('#scenarios');
+}
+
+// ... calculate the shortest scenario
+function solve() {
+	// calculate total distance for each scenario
+	var complete = true;
+	$.each(scenarios, function(key, scenario) {
+		scenario.distance = 0;
+		$.each(scenario.trips, function(key, trip) {
+			if (!trip.directionsStatus || trip.directionsStatus != google.maps.DirectionsStatus.OK) complete = false;
+			else scenario.distance += trip.distance;
+		});
+	});
+
+	// bail out if we don't have all results back yet
+	if (!complete) return;
+	
+	// best scenario = shortest distance
+	scenarios.sort(function(a, b) {
+		return a.distance - b.distance;
+	});
+
+	// if the solution has changed, re-render
+	var new_solution = scenarios[0].key;
+	if (new_solution == solution) return;
+	solution = new_solution;
+
+	displayScenario(solution);
+	
+	// setup mouse over/out
+	$.each(scenarios, function(key, scenario) {
+		$('#scenario'+scenario.key).html(scenario.label + '<br/>' + scenario.distance.mToMiles()).hover(
+			function() {
+				if (scenario.key != solution) displayScenario(scenario.key);
+			}, function() {
+				if (scenario.key != solution) displayScenario(solution);
+			}
+		).appendTo('#scenarios'); // and display top to bottom
+	});	
+}
+
+function displayScenario(key) {
+	var pickup;
+
+	$.each(scenarios, function(skey, scenario) {
+		$.each(scenario.trips, function(tkey, trip) {
+			if (trip.listener) {
+				google.maps.event.removeListener(trip.listener);
+				trip.listener = null;
+			}	
+	
+			// show the chosen scenario
+			if (scenario.key == key) {
+				trip.directionsDisplay.setOptions({
+					directions: trip.directionsResult,
+					map: map,
+					polylineOptions: {
+						clickable: false,
+						strokeColor: trip.color,
+						strokeWeight: 4,
+						strokeOpacity: 0.8,
+						zIndex: 2
+					},
+					suppressMarkers: false,
+					preserveViewport: scenario.trips.length > 1, // do not move if this is one of many trips in the scenario
+					draggable: true
+				});
+
+				// so we can highlight the pickup segment
+				pickup = scenario.trips[0].via.join('');
+				
+				// add listener if it's the solution
+				if (scenario.key == solution) {
+					trip.listener = google.maps.event.addListener(trip.directionsDisplay, 'directions_changed', function() {
+						trip.directionsResult = this.getDirections();
+
+						// re-route the other routes
+						syncTrips(trip);
+						
+						trip.calcDistance()
+					});
+					
+					$('#warnings').html(trip.directionsResult.routes[0].warnings.join('<br/>'));
+					$('#copyrights').html(trip.directionsResult.routes[0].copyrights);
+				}
+
+			} else {
+				// hide the rest
+				trip.directionsDisplay.setMap(null);
+			}
+		});
+	});
+	
+	// show a thick border around the pickup segment
+	if (pickup) {
+		$.each(scenarios, function(skey, scenario) {
+			$.each(scenario.trips, function(tkey, trip) {
+				if (trip.key == pickup) {
+					trip.directionsDisplay.setOptions({
+						directions: trip.directionsResult,
+						map: map,
+						polylineOptions: {
+							clickable: false,
+							strokeColor: trip.color,
+							strokeWeight: 12,
+							strokeOpacity: 0.8,
+							zIndex: 1
+						},
+						suppressMarkers: true,
+						preserveViewport: true,
+						draggable: false
+					});					
+				}
+			});
+		});	
+	}
+}
+
+// if one Trip has been dragged around, sync the others
+// shows how to get and manipulate dragged routes
+// WARNING via_waypoint is UNDOCUMENTED - see http://code.google.com/p/gmaps-api-issues/issues/detail?id=2746
+function syncTrips(master) {
+	var legs = master.directionsResult.routes[0].legs;
+	
+	// master is a shared trip
+	if (master.via.length) {
+		// scan for related trips
+		$.each(scenarios, function(key, scenario) {
+			$.each(scenario.trips, function(key, trip) {			
+				if (trip.key == master.via[0] + master.from + master.to + master.via[1]) {
+					// opposite
+					trip.directionsRequest = {
+						origin: legs[1].start_location, 
+						destination: legs[1].end_location,					
+						waypoints: $.map(legs[0].via_waypoint, function(waypoint) {
+								return { location: waypoint.location, stopover: false }			
+							}).reverse().concat(
+								[{ location: legs[0].start_location, stopover: true }]
+							).concat(
+								[{ location: legs[2].end_location, stopover: true }]
+							).concat(
+								$.map(legs[2].via_waypoint, function(waypoint) {
+									return { location: waypoint.location, stopover: false }			
+								}).reverse()
+							),
+						travelMode: google.maps.DirectionsTravelMode.DRIVING
+					};
+					
+				} else if (trip.key == master.via.join('')) {
+					// other		
+					trip.directionsRequest = {
+						origin: legs[1].start_location, 
+						destination: legs[1].end_location,
+						waypoints: $.map(legs[1].via_waypoint, function(waypoint) {
+							return { location: waypoint.location, stopover: false }			
+						}),
+						travelMode: google.maps.DirectionsTravelMode.DRIVING
+					};
+					
+				} else if (trip.key == master.from + master.to) {
+					// direct		
+					trip.directionsRequest = {
+						origin: legs[0].start_location, 
+						destination: legs[2].end_location,
+						waypoints: [],
+						travelMode: google.maps.DirectionsTravelMode.DRIVING		
+					};
+				
+				} else return; // continue
+			
+				trip.route();
+			});
+		});	
+	
+	} else {
+		// master is a solo trip
+		// reconstruct both shared rides based on change
+
+		// scan for related trips
+		$.each(scenarios, function(key, scenario) {
+			$.each(scenario.trips, function(key, trip) {			
+				if (!trip.via.length) return; //continue
+				
+				if (master.key == trip.from + trip.to) {
+				
+					trip.directionsRequest = {
+						origin: legs[0].start_location, 
+						destination: legs[0].end_location,
+						waypoints: trip.directionsRequest.waypoints, // unchanged
+						travelMode: google.maps.DirectionsTravelMode.DRIVING		
+					};
+					
+				} else if (master.key = trip.via.join('')) {
+
+					// get indexes of stopover waypoints
+					var stopovers = $.map(trip.directionsRequest.waypoints, function(waypoint, i) {
+						if (waypoint.stopover) return i;
+						else return false; // continue
+					});
+						
+					// splice changed leg between stopovers
+					trip.directionsRequest = {
+						origin: trip.directionsRequest.origin, // unchanged
+						destination: trip.directionsRequest.destination, // unchanged
+						waypoints: trip.directionsRequest.waypoints.slice(0, stopovers[0]).concat(
+								[{ location: legs[0].start_location, stopover: true }]
+							).concat(
+								$.map(legs[0].via_waypoint, function(waypoint) {
+									return { location: waypoint.location, stopover: false }			
+								})
+							).concat(
+								[{ location: legs[0].end_location, stopover: true }]
+							).concat(
+								trip.directionsRequest.waypoints.slice(stopovers[1]+1)
+							), 
+						travelMode: google.maps.DirectionsTravelMode.DRIVING		
+					};
+				
+				} else return; // continue
+			
+				trip.route();
+			});
+		});		
+	}
+}
+
+// convert a number in meters to miles
+Number.prototype.mToMiles = function() {
+	var miles = this/1609.344;
+	return (miles >= 100 ? Math.round(miles) : miles.toPrecision(2)) + ' miles';
+};
+</script>
+<style type="text/css">
+body { font-family: Verdana, sans-serif; font-size: 10pt; }
+#panel { width: 280px; overflow: auto; }
+#map_canvas { position: absolute; top: 0px; left: 300px;}
+.scenario { border: 1px solid #CCCCCC; padding: 10px; margin: 10px; }
+</style>
+</head>
+<body>
+<div id="wrapper">
+	<div id="panel">
+		<div id="instructions">
+<h3>Draggable Directions</h3>
+<p>Mr. Green and Ms. Red both need to take a journey.</p>
+<p>Does it make sense for Mr. Green or Ms. Red to share a ride with the other, to reduce their total distance travelled?</p>
+<p>Drag the markers or the routes around to recalculate their best option.</p>
+<p>Mouseover the options below to compare.</p>
+		</div>
+		<div id="scenarios"></div>
+		<p id="warnings"></p>
+		<p id="copyrights"></p>
+		<p>Inspired by <a href="http://zimride.com">ZimRide</a></p>
+	</div>
+	<div id="map_canvas"></div>
+</div>
+</body>
+</html>
